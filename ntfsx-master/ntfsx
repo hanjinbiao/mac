@@ -1,0 +1,160 @@
+#!/bin/bash
+
+setDrive() {
+	uuid=$(diskutil info "$volume" | grep UUID | cut -d ':' -f2 | tr -d ' ')
+	volumeName=$(diskutil info "$volume" | grep "Volume Name" | cut -d ':' -f2 | tr -d ' ')
+	if [ "$uuid" = "" ]; then
+		drive="LABEL=${volumeName// /\\040} none ntfs rw,auto,nobrowse #$volumeName"
+	else
+		drive="UUID=$uuid none ntfs rw,auto,nobrowse #$volumeName"
+	fi
+}
+
+setupDrive() {
+	echo $drive >> /etc/fstab
+	device=$(diskutil info "$volume" | grep "Device Node" | cut -d ':' -f2 | tr -d ' ')
+	diskutil unmount "$volume"
+	diskutil mount $device
+}
+
+manualAdd() {
+	setDrive
+	while read fileLine; do
+		if [ "$drive" = "$fileLine" ]; then
+			echo "$volume already configured."
+			exit 0;
+		fi
+	done < /etc/fstab
+	setupDrive
+	open "$volume"
+}
+
+autoAdd() {
+	setDrive
+	while read fileLine; do
+		if [ "$drive" = "$fileLine" ]; then
+			echo "$volume already configured."
+			return 1;
+		fi
+	done < /etc/fstab
+	if [ "$?" -ne 1 ]; then
+		echo "New Drive $volume is added."
+		setupDrive
+	fi
+}
+
+checkDrive() {
+	filetype=$(diskutil info "$volume" | grep "Type (Bundle):" | cut -d ':' -f2 | tr -d ' ')
+	if [ "$filetype" = "ntfs" ]; then
+		if [ "$1" = "auto" ]; then
+			autoAdd
+		else
+			manualAdd
+		fi
+	else
+		echo "$volume is not an NTFS drive."
+	fi
+}
+
+addDriveAuto() {
+	for volume in "/Volumes"/*
+	do
+		checkDrive auto
+	done
+}
+
+addDrive() {
+	select volume in "/Volumes"/*
+	do
+		case "$volume" in
+			"$QUIT")
+				echo "Exiting..."
+				break
+				;;
+			*)
+				echo "You picked "$volume" "
+				checkDrive
+				;;
+		esac
+	done
+}
+
+singleRemove() {
+	while read fileLine; do
+		fileLine=$(echo "$fileLine" | grep -v ^"#" | grep "#")
+		if [ "$fileLine" != "" ]; then
+			drives+=("${fileLine##*\#}")
+		fi
+	done < /etc/fstab
+	select drive in "${drives[@]}"
+	do
+		case "$drive" in
+			"$QUIT")
+				echo "Exiting."
+				exit
+				;;
+			*)
+				echo "You picked "$drive" to remove."
+				sed -i.bak "/$drive/d" /etc/fstab
+				if [ -f "/etc/fstab.bak" ];then
+					rm /etc/fstab.bak
+				fi
+				;;
+		esac
+	done
+}
+
+allRemove() {
+	echo "Removed all from fstab"
+	while read fileLine; do
+		fileLine=$(echo "$fileLine" | grep -v ^"#" | grep "#")
+		if [ "$fileLine" != "" ]; then
+			sed -i.bak "/${fileLine##*\#}/d" /etc/fstab
+			rm /etc/fstab.bak
+		fi
+	done < /etc/fstab
+}
+
+removeDrive() {
+	if [ "$1" = "all" ]; then
+		allRemove
+	else
+		singleRemove
+	fi
+}
+
+usage() {
+	echo "Usage : $0 [-h|--help|help] [-a|add] [-r|remove] [-R|removeall]"
+	echo "-h | --help | help : Help. Display this message and quit."
+	echo "-a | add           : Add new NTFS Drives to fstab manually."
+	echo "-r | remove        : Remove NTFS Drives from fstab."
+	echo "-R | removeall    : Remove all Drives from fstab."
+	exit
+}
+
+if [[ $(/usr/bin/id -u) -ne 0 ]]; then
+	echo "This script need to run as ROOT. Try sudo."
+else
+	if [ -z $1 ]; then
+		addDriveAuto
+		open "/Volumes/"
+	else
+		case $1 in
+			-a|add)
+				addDrive
+				;;
+			-r|remove)
+				removeDrive
+				;;
+			-R|removeall)
+				removeDrive all
+				;;
+			-h|--help|help)
+				usage
+				;;
+			*)
+				usage
+				;;
+		esac
+	fi
+fi
